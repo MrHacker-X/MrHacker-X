@@ -8,6 +8,7 @@
 
 
 <p align="center"><img src="https://raw.githubusercontent.com/MrHacker-X/Extra-X/main/tenor.gif" alt="Bt">
+<p align="center"><img src="https://raw.githubusercontent.com/MrHacker-X/MrHacker-X/main/assets/110318584-81067880-7fc2-11eb-8391-152d308e7f2b.gif" alt="Bt">
 
 <h3><b><i>🏆 Github Statistics :</i></b></h3>
 <a href="https://github.com/MrHacker-X"><img width=550 src="https://github-profile-trophy.vercel.app/?username=MrHacker-X&theme=dracula&no-frame=true&title=Followers,Stars,Commit,Repository,Issues"/></a>
