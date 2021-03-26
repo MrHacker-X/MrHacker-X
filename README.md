@@ -17,4 +17,6 @@
 
 <h3><b><i>📡 Connect with us :</i></b></h3>
 <a href="https://github.com/MrHacker-X/"><img align="left" title="Github" alt="Github" width="30px" src="assets/github.png" /></a>
-<a href="https://www.instagram.com/mrhacker.x/"><img align="left" title="Instagram" alt="Instagram" width="30px" src="assets/instagram.png" /></a>
+<a href="https://instagram.com/mrhacker.x/"><img align="left" title="Instagram" alt="Instagram" width="30px" src="assets/instagram.png" /></a>
+<a href="https://t.me/mrhackersx/"><img align="left" title="Telegram" alt="Telegram" width="30px" src="assets/telegram.png" /></a>
+<a href="https://youtube.com/c/MrHackerXr/"><img align="left" title="YouTube" alt="YouTube" width="30px" src="assets/youtube.png" /></a>
