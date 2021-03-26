@@ -14,3 +14,7 @@
 
 <h3><b><i>🏆 Profile Statistics :</i></b></h3>
 <a href="https://github.com/MrHacker-X"><img height="25" title="Counter" src="https://komarev.com/ghpvc/?username=MrHacker-X&color=blueviolet&style=flat-square"></a>
+
+<h3><b><i>📡 Connect with us :</i></b></h3>
+<a href="https://github.com/MrHacker-X/"><img align="left" title="Github" alt="Github" width="30px" src="assets/github.png" /></a>
+<a href="https://www.instagram.com/mrhacker.x/"><img align="left" title="Instagram" alt="Instagram" width="30px" src="assets/instagram.png" /></a>
