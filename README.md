@@ -1,10 +1,9 @@
-### Hey Geek
 
-![MrHacker-X's Github stats](https://github-readme-stats.vercel.app/api?username=MrHacker-X&show_icons=true&theme=radical)
+<!-- Github README -->
+<p align="center"><a href="https://github.com/MrHacker-X">
+<img height="165" src="https://github-readme-stats.vercel.app/api?username=MrHacker-X&show_icons=true&include_all_commits=true&theme=react&cache_seconds=3200&hide_border=true" /></a>
 
-<p align="center">
-
-<img src="https://raw.githubusercontent.com/MrHacker-X/Extra-X/main/tenor.gif" alt="Bt">
+<p align="center"><img src="https://raw.githubusercontent.com/MrHacker-X/Extra-X/main/tenor.gif" alt="Bt">
 
 ![MrHacker-X's wakatime stats](https://github-readme-stats.vercel.app/api/top-langs/?username=MrHacker-X&layout=compact)  
 
