@@ -6,7 +6,7 @@
 <p align="center"><a href="https://github.com/MrHacker-X"><img src="https://github-readme-stats.vercel.app/api/top-langs/?username=MrHacker-X&layout=compact&theme=react&hide_border=true" />
 </a></p>
 
-
+![](https://komarev.com/ghpvc/?username=MrHacker-X&style=flat-square)
 
 <p align="center"><img src="https://raw.githubusercontent.com/MrHacker-X/Extra-X/main/tenor.gif" alt="Bt">
 <p align="center"><img src="https://raw.githubusercontent.com/MrHacker-X/MrHacker-X/main/assets/110318584-81067880-7fc2-11eb-8391-152d308e7f2b.gif" alt="Bt">
