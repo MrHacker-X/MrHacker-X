@@ -1,0 +1,48 @@
+name: GitHub profile alert
+
+on:
+  schedule:
+    # 06:00 IST = 00:30 UTC. India has no daylight saving.
+    - cron: "30 0 * * *"
+    # 18:00 IST = 12:30 UTC.
+    - cron: "30 12 * * *"
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: github-profile-alert
+  cancel-in-progress: false
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v7
+        with:
+          python-version: "3.12"
+
+      - name: Check GitHub profile
+        env:
+          TG_BOT_TOKEN: ${{ secrets.TG_BOT_TOKEN }}
+          TG_CHAT_ID: ${{ secrets.TG_CHAT_ID }}
+          GITHUB_USERNAME: MrHacker-X
+          STATE_FILE: automation-script/github_state.json
+        run: python automation-script/alert-script.py
+
+      - name: Commit profile state
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add -- automation-script/github_state.json
+          if git diff --cached --quiet; then
+            echo "No state change to commit."
+            exit 0
+          fi
+          git commit -m "Update GitHub profile check state"
+          git push
