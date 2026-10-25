@@ -32,6 +32,7 @@ jobs:
           TG_BOT_TOKEN: ${{ secrets.TG_BOT_TOKEN }}
           TG_CHAT_ID: ${{ secrets.TG_CHAT_ID }}
           GITHUB_USERNAME: MrHacker-X
+          ALWAYS_NOTIFY: "1"
           STATE_FILE: automation-script/github_state.json
         run: python automation-script/alert-script.py
 

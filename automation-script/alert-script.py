@@ -19,6 +19,9 @@ def clean_env(name, default=None):
 USERNAME = clean_env("GITHUB_USERNAME", "MrHacker-X")
 TG_BOT_TOKEN = clean_env("TG_BOT_TOKEN")
 TG_CHAT_ID = clean_env("TG_CHAT_ID")
+ALWAYS_NOTIFY = clean_env("ALWAYS_NOTIFY", "1").lower() in (
+    "1", "true", "yes", "on"
+)
 
 STATE_FILE = Path(
     os.getenv("STATE_FILE", "github_state.json")
@@ -160,6 +163,9 @@ def counts_changed(old_state, repos, followers, following):
 
 
 def needs_alert(old_state, status, counts=None):
+    if ALWAYS_NOTIFY:
+        return True
+
     if old_state.get("last_status") != status:
         return True
 
@@ -351,6 +357,21 @@ def github_request():
         return error.code, data
 
 
+def has_changes(old_state, repos, followers, following, restored):
+    if restored:
+        return True
+
+    if not old_state.get("last_successful_check"):
+        return True
+
+    return counts_changed(
+        old_state,
+        repos,
+        followers,
+        following
+    )
+
+
 def success_message(data, old_state, checked, restored=False):
     repos = as_count(data.get("public_repos"))
     followers = as_count(data.get("followers"))
@@ -377,10 +398,22 @@ def success_message(data, old_state, checked, restored=False):
         else "🟢 GitHub Profile Online"
     )
 
+    status_line = (
+        "📊 Stats unchanged since the last check."
+        if not has_changes(
+            old_state,
+            repos,
+            followers,
+            following,
+            restored
+        )
+        else f"{USERNAME} is publicly accessible "
+        "and responding normally."
+    )
+
     return (
         f"{title}\n\n"
-        f"{USERNAME} is publicly accessible "
-        "and responding normally.\n\n"
+        f"{status_line}\n\n"
         f"📦 Repositories: {repos}{repo_delta}\n"
         f"👥 Followers: {followers}{follower_delta}\n"
         f"🔗 Following: {following}{following_delta}\n\n"
