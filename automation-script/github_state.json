@@ -4,6 +4,6 @@
   "followers": 1270,
   "following": 0,
   "last_successful_check": "2026-10-27T23:41:04+05:30",
-  "last_status": "online",
-  "last_checked": "2026-10-27T23:41:04+05:30"
+  "last_status": "api_warning:403",
+  "last_checked": "2026-10-28T11:31:37+05:30"
 }
