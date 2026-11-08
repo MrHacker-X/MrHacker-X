@@ -347,7 +347,7 @@ def make_message(
     stats=None,
     detail="",
 ):
-    title = f"GitHub Profile Watch — {USERNAME}"
+    title = f"▶ GitHub Profile Watch: {USERNAME}"
 
     if kind == "online":
         restored = (
