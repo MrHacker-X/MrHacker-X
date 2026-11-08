@@ -1,8 +1,11 @@
+
 #!/usr/bin/env python3
+"""GitHub public-profile watcher with Telegram notifications."""
 
 import json
 import os
 import sys
+import time
 import urllib.error
 import urllib.parse
 import urllib.request
@@ -10,623 +13,684 @@ from datetime import datetime
 from pathlib import Path
 from zoneinfo import ZoneInfo
 
+try:
+    import fcntl
+except ImportError:
+    fcntl = None
 
-def clean_env(name, default=None):
-    value = (os.getenv(name) or "").strip()
-    return value or default
-
-
-USERNAME = clean_env("GITHUB_USERNAME", "MrHacker-X")
-TG_BOT_TOKEN = clean_env("TG_BOT_TOKEN")
-TG_CHAT_ID = clean_env("TG_CHAT_ID")
-ALWAYS_NOTIFY = clean_env("ALWAYS_NOTIFY", "1").lower() in (
-    "1", "true", "yes", "on"
-)
-
-STATE_FILE = Path(
-    os.getenv("STATE_FILE", "github_state.json")
-)
 
 IST = ZoneInfo("Asia/Kolkata")
 
-SNAPSHOT_KEYS = (
-    "username",
-    "repositories",
-    "followers",
-    "following",
-    "last_successful_check",
+USERNAME = (
+    os.getenv("GITHUB_USERNAME") or "MrHacker-X"
+).strip()
+
+TG_BOT_TOKEN = (os.getenv("TG_BOT_TOKEN") or "").strip()
+TG_CHAT_ID = (os.getenv("TG_CHAT_ID") or "").strip()
+GITHUB_TOKEN = (os.getenv("GITHUB_TOKEN") or "").strip()
+
+ALWAYS_NOTIFY = (
+    (os.getenv("ALWAYS_NOTIFY") or "1").strip().lower()
+    in ("1", "true", "yes", "on")
 )
 
+STATE_FILE = Path(
+    os.getenv("STATE_FILE")
+    or (Path(__file__).resolve().parent / "github_state.json")
+).expanduser().resolve()
 
-def current_time():
-    now = datetime.now(IST)
+API_VERSION = "2022-11-28"
+MAX_PENDING = 100
 
-    display = now.strftime("%d %b %Y • %I:%M %p")
-    iso = now.isoformat(timespec="seconds")
 
-    return display, iso
+def now():
+    d = datetime.now(IST)
+    return (
+        d.strftime("%d %b %Y • %I:%M %p"),
+        d.isoformat(timespec="seconds"),
+    )
 
 
 def load_state():
-    if not STATE_FILE.exists():
+    try:
+        with STATE_FILE.open(encoding="utf-8") as f:
+            value = json.load(f)
+
+        if not isinstance(value, dict):
+            return {}
+
+        tracked = value.get("tracked_username", USERNAME)
+
+        if not isinstance(tracked, str):
+            return {}
+
+        if tracked.lower() != USERNAME.lower():
+            return {}
+
+        return value
+
+    except (OSError, ValueError):
         return {}
 
-    try:
-        with STATE_FILE.open("r", encoding="utf-8") as f:
-            data = json.load(f)
 
-        if isinstance(data, dict):
-            return data
-
-    except (json.JSONDecodeError, OSError):
-        pass
-
-    return {}
-
-
-def save_state(data):
+def save_state(state):
     STATE_FILE.parent.mkdir(
         parents=True,
-        exist_ok=True
+        exist_ok=True,
     )
 
-    temp_file = STATE_FILE.with_suffix(".tmp")
+    temp = STATE_FILE.with_name(
+        STATE_FILE.name + ".tmp"
+    )
 
-    with temp_file.open("w", encoding="utf-8") as f:
+    with temp.open("w", encoding="utf-8") as f:
         json.dump(
-            data,
+            state,
             f,
+            ensure_ascii=False,
             indent=2,
-            ensure_ascii=False
         )
         f.write("\n")
+        f.flush()
+        os.fsync(f.fileno())
 
-    temp_file.replace(STATE_FILE)
-
-
-def format_delta(current, previous):
-    if previous is None:
-        return ""
-
-    try:
-        difference = int(current) - int(previous)
-    except (TypeError, ValueError):
-        return ""
-
-    if difference > 0:
-        return f"  [+{difference}]"
-
-    if difference < 0:
-        return f"  [{difference}]"
-
-    return ""
+    os.replace(temp, STATE_FILE)
 
 
-def as_count(value):
-    try:
-        return int(value)
-    except (TypeError, ValueError):
-        return 0
+def api_request(path):
+    headers = {
+        "Accept": "application/vnd.github+json",
+        "User-Agent": "GitHub-Profile-Watch",
+        "X-GitHub-Api-Version": API_VERSION,
+    }
 
-
-def validate_config():
-    missing = [
-        name
-        for name, value in (
-            ("TG_BOT_TOKEN", TG_BOT_TOKEN),
-            ("TG_CHAT_ID", TG_CHAT_ID),
+    if GITHUB_TOKEN:
+        headers["Authorization"] = (
+            f"Bearer {GITHUB_TOKEN}"
         )
-        if not value
-    ]
 
-    if not missing:
-        return
-
-    print(
-        "Missing required environment: " + ", ".join(missing),
-        file=sys.stderr
-    )
-    raise SystemExit(1)
-
-
-def snapshot_from(old_state):
-    return {
-        key: old_state[key]
-        for key in SNAPSHOT_KEYS
-        if key in old_state
-    }
-
-
-def observe(old_state, status, checked_iso, snapshot=None):
-    # Failed checks keep the last successful snapshot.
-    state = snapshot_from(old_state)
-
-    if snapshot:
-        state.update(snapshot)
-
-    state["last_status"] = status
-    state["last_checked"] = checked_iso
-    return state
-
-
-def counts_changed(old_state, repos, followers, following):
-    current = {
-        "repositories": repos,
-        "followers": followers,
-        "following": following,
-    }
-
-    return any(
-        old_state.get(key) != value
-        for key, value in current.items()
+    request = urllib.request.Request(
+        "https://api.github.com" + path,
+        headers=headers,
     )
 
+    for attempt in range(3):
+        try:
+            with urllib.request.urlopen(
+                request,
+                timeout=20,
+            ) as response:
+                code = response.status
+                raw = response.read()
+                response_headers = dict(response.headers)
 
-def needs_alert(old_state, status, counts=None):
-    if ALWAYS_NOTIFY:
-        return True
+        except urllib.error.HTTPError as error:
+            code = error.code
+            raw = error.read()
+            response_headers = dict(error.headers)
 
-    if old_state.get("last_status") != status:
-        return True
+        except (
+            urllib.error.URLError,
+            TimeoutError,
+            OSError,
+        ) as error:
+            if attempt < 2:
+                time.sleep(2 ** attempt)
+                continue
 
-    if status != "online" or counts is None:
-        return False
+            return 0, None, str(error)
 
-    return counts_changed(old_state, *counts)
+        try:
+            data = json.loads(
+                raw.decode("utf-8")
+            )
+
+        except (
+            UnicodeDecodeError,
+            json.JSONDecodeError,
+        ):
+            if code == 200 and attempt < 2:
+                time.sleep(2 ** attempt)
+                continue
+
+            return code, None, "Invalid JSON response"
+
+        if code in (500, 502, 503, 504) and attempt < 2:
+            time.sleep(2 ** attempt)
+            continue
+
+        detail = (
+            data.get("message", "")
+            if isinstance(data, dict)
+            else ""
+        )
+
+        if code in (403, 429):
+            retry_after = response_headers.get(
+                "Retry-After", ""
+            )
+
+            if retry_after:
+                detail = (
+                    f"{detail} "
+                    f"(Retry-After: {retry_after}s)"
+                )
+
+        return code, data, str(detail)[:180]
+
+    return 0, None, "Request retries exhausted"
 
 
-def quiet_note(status):
-    if status == "online":
+def valid_count(value):
+    return type(value) is int and value >= 0
+
+
+def fetch_profile():
+    quoted = urllib.parse.quote(
+        USERNAME,
+        safe="",
+    )
+
+    status, data, detail = api_request(
+        f"/users/{quoted}"
+    )
+
+    if status != 200:
+        return status, None, detail
+
+    if not isinstance(data, dict):
+        return -1, None, "Invalid user profile response"
+
+    login = data.get("login")
+
+    if (
+        not isinstance(login, str)
+        or login.lower() != USERNAME.lower()
+    ):
+        return -1, None, "Unexpected user profile response"
+
+    for key in ("public_repos", "followers"):
+        if not valid_count(data.get(key)):
+            return (
+                -1,
+                None,
+                "Missing/invalid profile statistics",
+            )
+
+    return 200, data, ""
+
+
+def fetch_stars(expected_repos):
+    """
+    Count stars received across every public repository
+    owned by the monitored GitHub account.
+    """
+
+    quoted = urllib.parse.quote(
+        USERNAME,
+        safe="",
+    )
+
+    total = 0
+    seen_ids = set()
+    page = 1
+
+    while True:
+        path = (
+            f"/users/{quoted}/repos"
+            f"?type=owner&per_page=100&page={page}"
+        )
+
+        status, data, detail = api_request(path)
+
+        if status != 200:
+            return (
+                status,
+                None,
+                f"Repository listing failed "
+                f"on page {page}: {detail}",
+            )
+
+        if not isinstance(data, list) or len(data) > 100:
+            return (
+                -1,
+                None,
+                "Invalid repository listing response",
+            )
+
+        for repo in data:
+            if not isinstance(repo, dict):
+                return -1, None, "Invalid repository data"
+
+            stars = repo.get("stargazers_count")
+            repo_id = repo.get("id")
+            owner = repo.get("owner")
+
+            if (
+                not valid_count(stars)
+                or not isinstance(repo_id, int)
+            ):
+                return -1, None, "Invalid repository statistics"
+
+            if not isinstance(owner, dict):
+                return -1, None, "Missing repository owner"
+
+            owner_login = owner.get("login", "")
+
+            if str(owner_login).lower() != USERNAME.lower():
+                return -1, None, "Unexpected repository owner"
+
+            if repo_id in seen_ids:
+                return (
+                    -1,
+                    None,
+                    "Duplicate repository across pages",
+                )
+
+            seen_ids.add(repo_id)
+            total += stars
+
+        if len(data) < 100:
+            break
+
+        page += 1
+
+        if page > 1000:
+            return (
+                -1,
+                None,
+                "Repository pagination exceeded safety limit",
+            )
+
+    if len(seen_ids) != expected_repos:
         return (
-            "No alert. Profile is online and "
-            "the stats are unchanged."
+            -1,
+            None,
+            "Repository count mismatch: "
+            f"profile={expected_repos}, "
+            f"listing={len(seen_ids)}",
         )
 
-    if status == "unavailable":
-        return "No alert. Profile is still unavailable."
-
-    if status.startswith("api_warning"):
-        return "No alert. The GitHub API warning is unchanged."
-
-    if status == "server_error":
-        return "No alert. The GitHub server error is unchanged."
-
-    if status == "network_error":
-        return "No alert. The network error is unchanged."
-
-    if status == "invalid_response":
-        return "No alert. The invalid response is unchanged."
-
-    return "No alert. The check result is unchanged."
+    return 200, total, ""
 
 
-def report(message, alert, note):
-    if not alert:
-        print(note)
-        return
+def delta(current, old):
+    if not valid_count(old):
+        return ""
 
-    send_telegram(message)
-    print(message)
+    difference = current - old
 
-
-def deliver(
-    old_state,
-    kind,
-    message,
-    checked_iso,
-    snapshot=None,
-    counts=None
-):
-    alert = needs_alert(old_state, kind, counts)
-    report(message, alert, quiet_note(kind))
-    save_state(
-        observe(old_state, kind, checked_iso, snapshot)
+    return (
+        f"  [{difference:+d}]"
+        if difference
+        else ""
     )
-    return 0
 
 
-def format_saved_time(value):
-    try:
-        parsed = datetime.fromisoformat(str(value))
-    except (TypeError, ValueError):
-        return str(value)
-
-    if parsed.tzinfo is None:
-        parsed = parsed.replace(tzinfo=IST)
-    else:
-        parsed = parsed.astimezone(IST)
-
-    return parsed.strftime("%d %b %Y • %I:%M %p")
-
-
-def last_known_text(old_state):
-    stamp = old_state.get("last_successful_check")
-
-    if not stamp:
-        return "No earlier successful check is saved."
+def last_known(state):
+    if not state.get("last_successful_check"):
+        return "No earlier successful check saved."
 
     return (
         "Last confirmed online:\n"
-        f"📦 Repositories: {old_state.get('repositories', 0)}\n"
-        f"👥 Followers: {old_state.get('followers', 0)}\n"
-        f"🔗 Following: {old_state.get('following', 0)}\n"
-        f"🕒 {format_saved_time(stamp)}"
+        f"📦 Repositories: {state.get('repositories', 'N/A')}\n"
+        f"👥 Followers: {state.get('followers', 'N/A')}\n"
+        f"⭐ Total Stars: {state.get('stars', 'N/A')}\n"
+        f"🕒 {state['last_successful_check']}"
     )
 
 
-def github_detail(data):
-    if not isinstance(data, dict):
-        return ""
+def make_message(
+    kind,
+    display,
+    state,
+    stats=None,
+    detail="",
+):
+    title = f"GitHub Profile Watch — {USERNAME}"
 
-    message = data.get("message")
+    if kind == "online":
+        restored = (
+            state.get("confirmed_status") == "unavailable"
+        )
 
-    if message is None:
-        return ""
+        prior = (
+            state.get("last_successful_check") is not None
+        )
 
-    text = " ".join(str(message).split())
+        changed = (
+            not prior
+            or any(
+                state.get(k) != v
+                for k, v in stats.items()
+            )
+        )
 
-    if len(text) > 240:
-        text = text[:237] + "..."
+        header = (
+            "🟢 GitHub Profile Back Online"
+            if restored
+            else "🟢 GitHub Profile Online"
+        )
 
-    return text
+        context = (
+            "📊 Statistics updated."
+            if changed
+            else "📊 Stats unchanged since "
+                 "the last successful check."
+        )
+
+        return (
+            f"{header}\n\n"
+            f"{title}\n"
+            f"{context}\n\n"
+            f"📦 Repositories: {stats['repositories']}"
+            f"{delta(stats['repositories'], state.get('repositories'))}\n"
+            f"👥 Followers: {stats['followers']}"
+            f"{delta(stats['followers'], state.get('followers'))}\n"
+            f"⭐ Total Stars: {stats['stars']}"
+            f"{delta(stats['stars'], state.get('stars'))}\n\n"
+            f"🕒 Checked: {display}"
+        )
+
+    if kind == "unavailable":
+        return (
+            "🔴 GitHub Profile Unavailable\n\n"
+            f"{title}\n"
+            "The public API returned HTTP 404 "
+            "on two consecutive checks.\n\n"
+            f"{last_known(state)}\n\n"
+            f"🕒 Checked: {display}"
+        )
+
+    if kind == "unconfirmed_404":
+        return (
+            "🟠 GitHub Profile 404 — Unconfirmed\n\n"
+            f"{title}\n"
+            "First HTTP 404. Waiting for another "
+            "check before marking unavailable.\n\n"
+            f"{last_known(state)}\n\n"
+            f"🕒 Checked: {display}"
+        )
+
+    return (
+        "🟡 GitHub Check Failed\n\n"
+        f"{title}\n"
+        f"⚠️ {detail or kind}\n\n"
+        "No confirmed profile status change "
+        "has been assumed.\n\n"
+        f"🕒 Checked: {display}"
+    )
 
 
 def send_telegram(message):
-    if not TG_BOT_TOKEN:
-        raise RuntimeError(
-            "TG_BOT_TOKEN is missing."
-        )
-
-    if not TG_CHAT_ID:
-        raise RuntimeError(
-            "TG_CHAT_ID is missing."
-        )
-
     url = (
-        f"https://api.telegram.org/"
+        "https://api.telegram.org/"
         f"bot{TG_BOT_TOKEN}/sendMessage"
     )
 
-    payload = urllib.parse.urlencode({
+    body = urllib.parse.urlencode({
         "chat_id": TG_CHAT_ID,
         "text": message,
-        "disable_web_page_preview": "true"
+        "disable_web_page_preview": "true",
     }).encode("utf-8")
 
     request = urllib.request.Request(
         url,
-        data=payload,
-        method="POST",
+        data=body,
         headers={
             "Content-Type":
-                "application/x-www-form-urlencoded"
-        }
-    )
-
-    with urllib.request.urlopen(
-        request,
-        timeout=20
-    ) as response:
-        result = json.loads(
-            response.read().decode("utf-8")
-        )
-
-    if not result.get("ok"):
-        raise RuntimeError(
-            f"Telegram API error: {result}"
-        )
-
-
-def github_request():
-    request = urllib.request.Request(
-        f"https://api.github.com/users/{USERNAME}",
-        headers={
-            "Accept":
-                "application/vnd.github+json",
-            "User-Agent":
-                "GitHub-Profile-Watch",
-            "X-GitHub-Api-Version":
-                "2022-11-28"
-        }
+                "application/x-www-form-urlencoded",
+        },
+        method="POST",
     )
 
     try:
         with urllib.request.urlopen(
             request,
-            timeout=20
+            timeout=20,
         ) as response:
-
-            body = response.read().decode(
-                "utf-8"
+            data = json.loads(
+                response.read().decode("utf-8")
             )
 
-            return (
-                response.status,
-                json.loads(body)
+        if (
+            not isinstance(data, dict)
+            or data.get("ok") is not True
+        ):
+            raise RuntimeError(
+                "Telegram returned an unsuccessful response"
             )
 
-    except urllib.error.HTTPError as error:
+    except (
+        urllib.error.HTTPError,
+        urllib.error.URLError,
+        TimeoutError,
+        OSError,
+        ValueError,
+        RuntimeError,
+    ) as error:
+        raise RuntimeError(
+            f"Telegram delivery failed: {error}"
+        ) from error
+
+
+def flush_queue(state):
+    pending = state.get("pending", [])
+
+    while pending:
         try:
-            body = error.read().decode(
-                "utf-8"
+            send_telegram(pending[0])
+
+        except RuntimeError as error:
+            print(
+                str(error),
+                file=sys.stderr,
             )
-            data = json.loads(body)
-        except Exception:
-            data = {}
+            return False
 
-        return error.code, data
+        pending.pop(0)
+        save_state(state)
 
-
-def has_changes(old_state, repos, followers, following, restored):
-    if restored:
-        return True
-
-    if not old_state.get("last_successful_check"):
-        return True
-
-    return counts_changed(
-        old_state,
-        repos,
-        followers,
-        following
-    )
+    return True
 
 
-def success_message(data, old_state, checked, restored=False):
-    repos = as_count(data.get("public_repos"))
-    followers = as_count(data.get("followers"))
-    following = as_count(data.get("following"))
+def queue_alert(state, message):
+    pending = state.setdefault("pending", [])
 
-    repo_delta = format_delta(
-        repos,
-        old_state.get("repositories")
-    )
+    if len(pending) >= MAX_PENDING:
+        pending.pop(0)
 
-    follower_delta = format_delta(
-        followers,
-        old_state.get("followers")
-    )
-
-    following_delta = format_delta(
-        following,
-        old_state.get("following")
-    )
-
-    title = (
-        "🟢 GitHub Profile Back Online"
-        if restored
-        else "🟢 GitHub Profile Online"
-    )
-
-    status_line = (
-        "📊 Stats unchanged since the last check."
-        if not has_changes(
-            old_state,
-            repos,
-            followers,
-            following,
-            restored
+        print(
+            "Warning: notification queue full; "
+            "oldest message discarded",
+            file=sys.stderr,
         )
-        else f"{USERNAME} is publicly accessible "
-        "and responding normally."
-    )
 
-    return (
-        f"{title}\n\n"
-        f"{status_line}\n\n"
-        f"📦 Repositories: {repos}{repo_delta}\n"
-        f"👥 Followers: {followers}{follower_delta}\n"
-        f"🔗 Following: {following}{following_delta}\n\n"
-        f"🕒 Checked: {checked}"
-    )
+    pending.append(message)
 
 
-def unavailable_message(status, checked, old_state):
-    return (
-        "🔴 GitHub Profile Unavailable\n\n"
-        f"{USERNAME} is not publicly accessible "
-        "through the GitHub API.\n\n"
-        f"⚠️ HTTP Status: {status} Not Found\n\n"
-        f"{last_known_text(old_state)}\n\n"
-        "This may indicate that the profile has "
-        "been restricted, hidden, renamed, "
-        "or removed.\n\n"
-        f"🕒 Checked: {checked}"
-    )
+def check(state):
+    display, stamp = now()
 
+    status, profile, detail = fetch_profile()
+    stats = None
 
-def api_warning_message(status, checked, detail):
-    label = {
-        403: "Forbidden",
-        429: "Too Many Requests"
-    }.get(status, "API Error")
+    if status == 200:
+        stars_status, stars, stars_detail = fetch_stars(
+            profile["public_repos"]
+        )
 
-    lines = [
-        "🟠 GitHub API Warning",
-        "",
-        f"Unable to verify {USERNAME} right now.",
-        "",
-        f"⚠️ HTTP Status: {status} {label}",
-    ]
+        if stars_status != 200:
+            status = stars_status
+            detail = stars_detail
 
-    if detail:
-        lines.append(f"💬 {detail}")
+        else:
+            stats = {
+                "repositories": profile["public_repos"],
+                "followers": profile["followers"],
+                "stars": stars,
+            }
 
-    lines.extend([
-        "",
-        "The account is not being marked as "
-        "unavailable because this may be an "
-        "API or rate-limit issue.",
-        "",
-        f"🕒 Checked: {checked}",
-    ])
+    if status == 200:
+        kind = "online"
 
-    return "\n".join(lines)
+        changed = (
+            not state.get("last_successful_check")
+            or state.get("confirmed_status") == "unavailable"
+            or any(
+                state.get(k) != v
+                for k, v in stats.items()
+            )
+        )
 
+        notify = (
+            ALWAYS_NOTIFY
+            or state.get("last_observation") != "online"
+            or changed
+        )
 
-def server_error_message(status, checked):
-    return (
-        "🟡 GitHub Check Failed\n\n"
-        f"Unable to complete the public profile "
-        f"check for {USERNAME}.\n\n"
-        f"⚠️ HTTP Status: {status}\n\n"
-        "GitHub API returned a server-side error. "
-        "No account status change has been assumed.\n\n"
-        f"🕒 Checked: {checked}"
-    )
+        message = make_message(
+            kind,
+            display,
+            state,
+            stats,
+        )
 
+        state.update(stats)
 
-def network_error_message(reason, checked):
-    reason = str(reason)
+        state["last_successful_check"] = stamp
+        state["confirmed_status"] = "online"
+        state["404_streak"] = 0
 
-    if len(reason) > 120:
-        reason = reason[:117] + "..."
+    elif status == 404:
+        state["404_streak"] = (
+            state.get("404_streak", 0) + 1
+        )
 
-    return (
-        "🟡 GitHub Check Failed\n\n"
-        f"Unable to complete the public profile "
-        f"check for {USERNAME}.\n\n"
-        f"⚠️ Reason: {reason}\n\n"
-        "No account status change has been assumed.\n\n"
-        f"🕒 Checked: {checked}"
-    )
+        kind = (
+            "unavailable"
+            if state["404_streak"] >= 2
+            else "unconfirmed_404"
+        )
 
+        notify = (
+            ALWAYS_NOTIFY
+            or state.get("last_observation") != kind
+        )
 
-def other_status_message(status, checked):
-    return (
-        "🟡 GitHub Check Failed\n\n"
-        f"Unable to verify {USERNAME}.\n\n"
-        f"⚠️ HTTP Status: {status}\n\n"
-        "No account status change has been "
-        "assumed.\n\n"
-        f"🕒 Checked: {checked}"
-    )
+        message = make_message(
+            kind,
+            display,
+            state,
+        )
 
+        if kind == "unavailable":
+            state["confirmed_status"] = "unavailable"
 
-def profile_snapshot(data, checked_iso):
-    repos = as_count(data.get("public_repos"))
-    followers = as_count(data.get("followers"))
-    following = as_count(data.get("following"))
+    else:
+        if status in (403, 429):
+            kind = f"api_warning:{status}"
 
-    snapshot = {
-        "username": data.get("login"),
-        "repositories": repos,
-        "followers": followers,
-        "following": following,
-        "last_successful_check": checked_iso,
-    }
+        elif status == 0:
+            kind = "network_error"
 
-    return snapshot, (repos, followers, following)
+        elif status == -1:
+            kind = "invalid_response"
+
+        else:
+            kind = f"http_{status}"
+
+        state["404_streak"] = 0
+
+        notify = (
+            ALWAYS_NOTIFY
+            or state.get("last_observation") != kind
+        )
+
+        description = (
+            f"HTTP {status}: {detail}"
+            if status > 0
+            else detail
+        )
+
+        message = make_message(
+            kind,
+            display,
+            state,
+            detail=description,
+        )
+
+    state["last_observation"] = kind
+    state["last_checked"] = stamp
+    state["tracked_username"] = USERNAME
+
+    if notify:
+        queue_alert(state, message)
+        print(message)
+
+    else:
+        print(
+            f"No alert; unchanged status: "
+            f"{kind} ({display})"
+        )
+
+    save_state(state)
 
 
 def main():
-    validate_config()
-
-    checked, checked_iso = current_time()
-    old_state = load_state()
-
-    try:
-        status, data = github_request()
-
-    except (
-        urllib.error.URLError,
-        TimeoutError,
-        OSError
-    ) as error:
-
-        return deliver(
-            old_state,
-            "network_error",
-            network_error_message(error, checked),
-            checked_iso
+    if (
+        not USERNAME
+        or not TG_BOT_TOKEN
+        or not TG_CHAT_ID
+    ):
+        print(
+            "Required: GITHUB_USERNAME (or default), "
+            "TG_BOT_TOKEN and TG_CHAT_ID",
+            file=sys.stderr,
         )
+        return 2
 
-    if status == 200:
-        if not isinstance(data, dict):
-            return deliver(
-                old_state,
-                "invalid_response",
-                network_error_message(
-                    "Invalid GitHub API response",
-                    checked
-                ),
-                checked_iso
-            )
-
-        api_username = data.get("login")
-
-        if (
-            not isinstance(api_username, str)
-            or api_username.lower() != USERNAME.lower()
-        ):
-            return deliver(
-                old_state,
-                "invalid_response",
-                network_error_message(
-                    "Unexpected GitHub profile response",
-                    checked
-                ),
-                checked_iso
-            )
-
-        snapshot, counts = profile_snapshot(
-            data,
-            checked_iso
+    if fcntl is None:
+        print(
+            "Single-instance locking requires "
+            "fcntl (Linux/macOS).",
+            file=sys.stderr,
         )
-        restored = old_state.get("last_status") == "unavailable"
+        return 2
 
-        return deliver(
-            old_state,
-            "online",
-            success_message(
-                data,
-                old_state,
-                checked,
-                restored=restored
-            ),
-            checked_iso,
-            snapshot=snapshot,
-            counts=counts
-        )
-
-    if status == 404:
-        return deliver(
-            old_state,
-            "unavailable",
-            unavailable_message(
-                status,
-                checked,
-                old_state
-            ),
-            checked_iso
-        )
-
-    if status in (403, 429):
-        return deliver(
-            old_state,
-            f"api_warning:{status}",
-            api_warning_message(
-                status,
-                checked,
-                github_detail(data)
-            ),
-            checked_iso
-        )
-
-    if 500 <= status <= 599:
-        return deliver(
-            old_state,
-            "server_error",
-            server_error_message(status, checked),
-            checked_iso
-        )
-
-    return deliver(
-        old_state,
-        f"http_{status}",
-        other_status_message(status, checked),
-        checked_iso
+    STATE_FILE.parent.mkdir(
+        parents=True,
+        exist_ok=True,
     )
+
+    lock = STATE_FILE.with_name(
+        STATE_FILE.name + ".lock"
+    )
+
+    with lock.open("a+") as f:
+        try:
+            fcntl.flock(
+                f.fileno(),
+                fcntl.LOCK_EX | fcntl.LOCK_NB,
+            )
+
+        except BlockingIOError:
+            print(
+                "Another watcher instance is "
+                "already running; skipping."
+            )
+            return 0
+
+        state = load_state()
+
+        # Retry previously undelivered notifications.
+        flush_queue(state)
+
+        # Run current GitHub check regardless of
+        # Telegram delivery status.
+        check(state)
+
+        return 0 if flush_queue(state) else 1
 
 
 if __name__ == "__main__":
@@ -634,21 +698,8 @@ if __name__ == "__main__":
         sys.exit(main())
 
     except Exception as error:
-        checked, _ = current_time()
-
-        fallback = network_error_message(
-            f"Watcher error: {error}",
-            checked
+        print(
+            f"Watcher failure: {error}",
+            file=sys.stderr,
         )
-
-        try:
-            send_telegram(fallback)
-        except Exception as telegram_error:
-            print(
-                f"Telegram notification failed: "
-                f"{telegram_error}",
-                file=sys.stderr
-            )
-
-        print(fallback, file=sys.stderr)
         sys.exit(1)
