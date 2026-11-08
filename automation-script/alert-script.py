@@ -347,7 +347,6 @@ def make_message(
     stats=None,
     detail="",
 ):
-    title = f"▶ GitHub Profile Watch: {USERNAME}"
 
     if kind == "online":
         restored = (
@@ -381,7 +380,6 @@ def make_message(
 
         return (
             f"{header}\n\n"
-            f"{title}\n"
             f"{context}\n\n"
             f"📦 Repositories: {stats['repositories']}"
             f"{delta(stats['repositories'], state.get('repositories'))}\n"
